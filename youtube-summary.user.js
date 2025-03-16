@@ -11,7 +11,7 @@
 
 (function() {
     'use strict';
-    
+
     console.log("脚本开始执行");
 
     // 添加 Markdown 渲染库
@@ -143,13 +143,62 @@
             overflow-y: auto;
             font-size: 14px;
             line-height: 1.5;
+
+        }
+
+         .yt-summary-info {
+            background: #f8f9fa;
+            border-radius: 8px;
+            padding: 12px;
+            margin: 12px 0;
+            font-size: 13px;
+            color: #606060;
+        }
+        .yt-summary-subtitle-section {
+            margin: 12px 0;
+            border-top: 1px solid #e0e0e0;
+            padding-top: 12px;
+        }
+        .yt-summary-collapse-btn {
+            display: flex;
+            align-items: center;
+            background: none;
+            border: none;
+            padding: 8px;
+            width: 100%;
+            cursor: pointer;
+            font-size: 14px;
+            color: #065fd4;
+        }
+        .yt-summary-collapse-btn:hover {
+            background: #f0f0f0;
+            border-radius: 4px;
+        }
+        .yt-summary-subtitle-content {
+            max-height: 200px;
+            overflow-y: auto;
+            padding: 8px;
+            background: #f8f9fa;
+            border-radius: 4px;
+            font-size: 13px;
+            line-height: 1.5;
+            margin-top: 8px;
+            white-space: pre-wrap;
+            display: none;
+             }
+        .yt-summary-arrow {
+            margin-right: 8px;
+            transition: transform 0.2s;
+        }
+        .yt-summary-arrow.expanded {
+            transform: rotate(90deg);
         }
     `;
 
     // 配置管理器
     class ConfigManager {
         static KEY = 'yt_summary_config';
-        
+
         static defaultConfig = {
             apiKey: '',
             baseUrl: 'https://api.openai.com/v1',
@@ -190,7 +239,7 @@
                 if (!ytInitialPlayerResponse) throw new Error('无法获取视频信息');
 
                 const data = JSON.parse(ytInitialPlayerResponse);
-                
+
                 // 获取字幕轨道
                 const captionTracks = data?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
                 if (!captionTracks || captionTracks.length === 0) {
@@ -231,13 +280,15 @@
                 // 在返回之前添加统计信息
                 const subtitleLines = textMatches.length;
                 const totalWords = subtitleText.split(/\s+/).length;
-                
+
                 return {
                     text: subtitleText,
                     stats: {
                         lines: subtitleLines,
                         words: totalWords,
-                        chars: subtitleText.length
+                        chars: subtitleText.length,
+
+                        avgLineLength: Math.round(subtitleText.length / subtitleLines)
                     }
                 };
 
@@ -297,6 +348,7 @@
             this.aiProcessor = new AIProcessor(this.config);
             this.settingsPanel = null;
             this.overlay = null;
+              this.subtitleData = null;
         }
 
         createUI() {
@@ -318,8 +370,38 @@
             settingsBtn.textContent = '⚙️';
             settingsBtn.onclick = () => this.showSettings();
 
+             // 添加字幕信息区域
+            const infoContainer = document.createElement('div');
+            infoContainer.className = 'yt-summary-info';
+
+            // 添加字幕内容区域
+            const subtitleSection = document.createElement('div');
+            subtitleSection.className = 'yt-summary-subtitle-section';
+
+            const collapseBtn = document.createElement('button');
+            collapseBtn.className = 'yt-summary-collapse-btn';
+
+            const arrow = document.createElement('span');
+            arrow.className = 'yt-summary-arrow';
+            arrow.textContent = '▶';
+
+            const btnText = document.createElement('span');
+            btnText.textContent = '显示字幕内容';
+
+            collapseBtn.appendChild(arrow);
+            collapseBtn.appendChild(btnText);
+
+            const subtitleContent = document.createElement('div');
+            subtitleContent.className = 'yt-summary-subtitle-content';
+
+            subtitleSection.appendChild(collapseBtn);
+            subtitleSection.appendChild(subtitleContent);
+
+
             header.appendChild(title);
             header.appendChild(settingsBtn);
+            panel.appendChild(infoContainer);
+            panel.appendChild(subtitleSection);
 
             const summaryBtn = document.createElement('button');
             summaryBtn.className = 'yt-summary-button';
@@ -329,23 +411,37 @@
             resultContainer.className = 'yt-summary-result-container';
 
             panel.appendChild(header);
+
             panel.appendChild(summaryBtn);
+            panel.appendChild(infoContainer);
+            panel.appendChild(subtitleSection);
+
             panel.appendChild(resultContainer);
 
+
             document.body.appendChild(panel);
+
+
 
             // 创建设置面板和遮罩
             this.createSettingsPanel();
             this.createOverlay();
 
+            collapseBtn.addEventListener('click', () => {
+                const isExpanded = subtitleContent.style.display === 'block';
+                subtitleContent.style.display = isExpanded ? 'none' : 'block';
+                arrow.className = `yt-summary-arrow ${isExpanded ? '' : 'expanded'}`;
+                btnText.textContent = isExpanded ? '显示字幕内容' : '隐藏字幕内容';
+            });
+
             // 绑定总结按钮事件
-            summaryBtn.addEventListener('click', () => {
+            summaryBtn.addEventListener('click', async () => {
                 if (!this.config.apiKey) {
                     alert('请先在设置中配置 API Key');
                     this.showSettings();
                     return;
                 }
-                this.handleSummarize(resultContainer);
+                await this.handleSummarize(infoContainer, subtitleContent, resultContainer);
             });
         }
 
@@ -464,43 +560,34 @@
             this.aiProcessor = new AIProcessor(this.config);
         }
 
-        async handleSummarize(resultContainer) {
+        async handleSummarize(infoContainer, subtitleContent, resultContainer) {
             try {
-                if (!this.config.apiKey) {
-                    alert('请先在设置中配置 API Key');
-                    this.showSettings();
-                    return;
-                }
-
-                // 清空结果容器
-                resultContainer.textContent = '';
-                
-                // 显示加载状态
-                const loadingText = document.createElement('div');
-                loadingText.textContent = '正在获取字幕...';
-                resultContainer.appendChild(loadingText);
+                // 清空之前的内容
+                resultContainer.textContent = '正在获取字幕...';
+                infoContainer.textContent = '';
+                subtitleContent.textContent = '';
 
                 // 获取字幕
                 const subtitleData = await this.subtitleManager.getSubtitles();
-                const subtitleInfo = document.createElement('div');
-                subtitleInfo.className = 'yt-summary-subtitle-info';
-                subtitleInfo.textContent = `字幕统计：${subtitleData.stats.lines}行 | ${subtitleData.stats.words}个词`;
-                
-                // 更新加载状态
-                loadingText.textContent = '正在生成总结...';
-                
-                // 获取AI总结
-                const summary = await this.aiProcessor.summarize(subtitleData.text, this.config.prompt);
-                
-                // 清空加载提示
-                resultContainer.textContent = '';
-                
-                // 渲染Markdown内容
-                const renderedContent = this.renderMarkdown(summary);
-                resultContainer.appendChild(renderedContent);
+                this.subtitleData = subtitleData;
 
-            } catch (error) {
+                // 更新字幕信息
+                infoContainer.textContent = `字幕统计：${subtitleData.stats.lines} 行 | ${subtitleData.stats.words} 个词 | ${subtitleData.stats.chars} 个字符`;
+
+                // 更新字幕内容
+                subtitleContent.textContent = subtitleData.text;
+
+                // 生成总结
+                resultContainer.textContent = '正在生成总结...';
+                const summary = await this.aiProcessor.summarize(subtitleData.text, this.config.prompt);
+
+                // 显示总结结果
+                const summaryContent = this.renderMarkdown(summary);
+                resultContainer.textContent = '';
+                resultContainer.appendChild(summaryContent);
+                } catch (error) {
                 resultContainer.textContent = `错误：${error.message}`;
+                infoContainer.textContent = '获取字幕失败';
             }
         }
 
@@ -509,7 +596,7 @@
             container.className = 'markdown-body';
 
             const lines = markdown.split('\n');
-            
+
             lines.forEach(line => {
                 if (!line.trim()) {
                     // 处理空行
@@ -572,12 +659,12 @@
                     if (match.index > lastIndex) {
                         p.appendChild(document.createTextNode(text.slice(lastIndex, match.index)));
                     }
-                    
+
                     // 添加加粗文本
                     const strong = document.createElement('strong');
                     strong.textContent = match[1];
                     p.appendChild(strong);
-                    
+
                     lastIndex = match.index + match[0].length;
                 }
 
@@ -629,7 +716,7 @@
     // 修改初始化逻辑
     function waitForYouTube() {
         console.log("等待YouTube页面加载...");
-        
+
         // 检查是否是视频页面
         if (!window.location.pathname.includes('/watch')) {
             console.log("不是视频页面，不初始化");
@@ -650,7 +737,7 @@
     // 使用多种方式确保脚本执行
     function bootloader() {
         console.log("启动加载器");
-        
+
         // 方式1: DOMContentLoaded
         if (document.readyState === 'loading') {
             console.log("等待DOMContentLoaded");

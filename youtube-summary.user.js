@@ -9,7 +9,7 @@
 // @run-at       document-start
 // ==/UserScript==
 
-(function() {
+(function () {
     'use strict';
 
     console.log("脚本开始执行");
@@ -45,6 +45,41 @@
             width: 320px;
             font-family: Roboto, Arial, sans-serif;
             padding: 16px;
+            transition: transform 0.3s ease-in-out;
+        }
+        .yt-summary-panel.collapsed {
+            transform: translateX(calc(100% - 40px));
+        }
+        .yt-summary-collapse-toggle {
+            position: absolute;
+            left: -20px;
+            top: 50%;
+            transform: translateY(-50%);
+            background: white;
+            border: 1px solid #e0e0e0;
+            border-radius: 50%;
+            width: 32px;
+            height: 32px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            box-shadow: -2px 0 8px rgba(0,0,0,0.1);
+            transition: background-color 0.2s;
+        }
+        .yt-summary-collapse-toggle:hover {
+            background-color: #f2f2f2;
+        }
+        .yt-summary-collapse-toggle .arrow {
+            border: solid #606060;
+            border-width: 0 2px 2px 0;
+            display: inline-block;
+            padding: 3px;
+            transform: rotate(135deg);
+            transition: transform 0.3s;
+        }
+        .yt-summary-panel.collapsed .yt-summary-collapse-toggle .arrow {
+            transform: rotate(-45deg);
         }
         .yt-summary-header {
             display: flex;
@@ -203,6 +238,15 @@
             apiKey: '',
             baseUrl: 'https://api.openai.com/v1',
             model: 'gpt-3.5-turbo',
+            temperature: 0.7,
+            top_p: 1,
+            presence_penalty: 0,
+            frequency_penalty: 0,
+            max_tokens: 2000,
+            n: 1,
+            stop: null,
+            stream: false,
+            logit_bias: {},
             prompt: `请分析以下视频字幕内容，并提供以下方面的总结：
 
 1. 视频主要内容概述（100字以内）
@@ -215,7 +259,7 @@
 
         static getConfig() {
             const saved = localStorage.getItem(this.KEY);
-            return saved ? {...this.defaultConfig, ...JSON.parse(saved)} : this.defaultConfig;
+            return saved ? { ...this.defaultConfig, ...JSON.parse(saved) } : this.defaultConfig;
         }
 
         static saveConfig(config) {
@@ -324,7 +368,8 @@
                                 content: `${prompt}\n\n内容：${text}`
                             }
                         ],
-                        temperature: 0.7
+                        temperature: this.config.temperature,
+                        top_p: this.config.top_p
                     })
                 });
 
@@ -348,11 +393,18 @@
             this.aiProcessor = new AIProcessor(this.config);
             this.settingsPanel = null;
             this.overlay = null;
-              this.subtitleData = null;
+            this.subtitleData = null;
+            this.inactivityTimer = null;
         }
 
         createUI() {
             GM_addStyle(STYLES);
+
+            // 移除已存在的面板
+            const existingPanel = document.querySelector('.yt-summary-panel');
+            if (existingPanel) {
+                existingPanel.remove();
+            }
 
             // 创建主面板
             const panel = document.createElement('div');
@@ -370,7 +422,7 @@
             settingsBtn.textContent = '⚙️';
             settingsBtn.onclick = () => this.showSettings();
 
-             // 添加字幕信息区域
+            // 添加字幕信息区域
             const infoContainer = document.createElement('div');
             infoContainer.className = 'yt-summary-info';
 
@@ -418,6 +470,30 @@
 
             panel.appendChild(resultContainer);
 
+            // 添加折叠按钮
+            const collapseToggle = document.createElement('div');
+            collapseToggle.className = 'yt-summary-collapse-toggle';
+            const arrowSpan = document.createElement('span');
+            arrowSpan.className = 'arrow';
+            collapseToggle.appendChild(arrowSpan);
+            panel.appendChild(collapseToggle);
+
+            // 绑定折叠按钮事件
+            collapseToggle.addEventListener('click', () => {
+                panel.classList.toggle('collapsed');
+            });
+
+            // 添加鼠标移入移出事件
+            panel.addEventListener('mouseenter', () => {
+                clearTimeout(this.inactivityTimer);
+                panel.classList.remove('collapsed');
+            });
+
+            panel.addEventListener('mouseleave', () => {
+                this.inactivityTimer = setTimeout(() => {
+                    panel.classList.add('collapsed');
+                }, 5000); // 5秒后自动隐藏
+            });
 
             document.body.appendChild(panel);
 
@@ -499,7 +575,7 @@
             // 提示词设置
             const promptLabel = document.createElement('label');
             promptLabel.className = 'yt-summary-label';
-            promptLabel.textContent = '提示词模板';
+            promptLabel.textContent = '提示词';
             panel.appendChild(promptLabel);
 
             const promptInput = document.createElement('textarea');
@@ -508,23 +584,147 @@
             promptInput.value = this.config.prompt;
             panel.appendChild(promptInput);
 
-            // 保存按钮
-            const saveButton = document.createElement('button');
-            saveButton.className = 'yt-summary-button';
-            saveButton.id = 'save-settings';
-            saveButton.textContent = '保存设置';
-            saveButton.style.marginTop = '16px';
-            panel.appendChild(saveButton);
+            // 高级设置折叠区域
+            const advancedSettingsBtn = document.createElement('button');
+            advancedSettingsBtn.className = 'yt-summary-collapse-btn';
+            advancedSettingsBtn.style.marginTop = '16px';
 
-            // 添加到页面
-            document.body.appendChild(panel);
-            this.settingsPanel = panel;
+            const advancedArrow = document.createElement('span');
+            advancedArrow.className = 'yt-summary-arrow';
+            advancedArrow.textContent = '▶';
 
-            // 绑定保存按钮事件
-            saveButton.addEventListener('click', () => {
-                this.saveSettings();
-                this.hideSettings();
+            const advancedBtnText = document.createElement('span');
+            advancedBtnText.textContent = '高级设置';
+
+            advancedSettingsBtn.appendChild(advancedArrow);
+            advancedSettingsBtn.appendChild(advancedBtnText);
+            panel.appendChild(advancedSettingsBtn);
+
+            const advancedSettingsContent = document.createElement('div');
+            advancedSettingsContent.style.display = 'none';
+            advancedSettingsContent.style.padding = '12px';
+            advancedSettingsContent.style.backgroundColor = '#f8f9fa';
+            advancedSettingsContent.style.borderRadius = '8px';
+            advancedSettingsContent.style.marginTop = '8px';
+
+            // Temperature 设置
+            const temperatureLabel = document.createElement('label');
+            temperatureLabel.className = 'yt-summary-label';
+            temperatureLabel.textContent = 'Temperature';
+            advancedSettingsContent.appendChild(temperatureLabel);
+
+            const temperatureInput = document.createElement('input');
+            temperatureInput.type = 'number';
+            temperatureInput.className = 'yt-summary-input';
+            temperatureInput.id = 'temperature';
+            temperatureInput.value = this.config.temperature || '0.7';
+            temperatureInput.step = '0.1';
+            temperatureInput.min = '0';
+            temperatureInput.max = '2';
+            advancedSettingsContent.appendChild(temperatureInput);
+
+            // Top P 设置
+            const topPLabel = document.createElement('label');
+            topPLabel.className = 'yt-summary-label';
+            topPLabel.textContent = 'Top P';
+            advancedSettingsContent.appendChild(topPLabel);
+
+            const topPInput = document.createElement('input');
+            topPInput.type = 'number';
+            topPInput.className = 'yt-summary-input';
+            topPInput.id = 'top_p';
+            topPInput.value = this.config.top_p || '1';
+            topPInput.step = '0.1';
+            topPInput.min = '0';
+            topPInput.max = '1';
+            advancedSettingsContent.appendChild(topPInput);
+
+            const presencePenalty = document.createElement('label');
+            presencePenalty.className = 'yt-summary-label';
+            presencePenalty.textContent = 'PresencePenalty';
+            advancedSettingsContent.appendChild(presencePenalty);
+
+            const presencePenaltyInput = document.createElement('input');
+            presencePenaltyInput.type = 'number';
+            presencePenaltyInput.className = 'yt-summary-input';
+            presencePenaltyInput.id = 'presence_penalty';
+            presencePenaltyInput.value = this.config.presence_penalty || '0';
+            presencePenaltyInput.step = '0.1';
+            presencePenaltyInput.min = '0';
+            presencePenaltyInput.max = '1';
+            advancedSettingsContent.appendChild(presencePenaltyInput);
+
+            const frequencyPenaltyLabel = document.createElement('label');
+            frequencyPenaltyLabel.className = 'yt-summary-label';
+            frequencyPenaltyLabel.textContent = 'FrequencyPenalty';
+            advancedSettingsContent.appendChild(frequencyPenaltyLabel);
+
+            const frequencyPenaltyInput = document.createElement('input');
+            frequencyPenaltyInput.type = 'number';
+            frequencyPenaltyInput.className = 'yt-summary-input';
+
+            frequencyPenaltyInput.id = 'presence_penalty';
+            frequencyPenaltyInput.value = this.config.presence_penalty || '0';
+            frequencyPenaltyInput.step = '0.1';
+            frequencyPenaltyInput.min = '0';
+            frequencyPenaltyInput.max = '1';
+            advancedSettingsContent.appendChild(frequencyPenaltyInput);
+
+
+            const MaxTokensLabel = document.createElement('label');
+            MaxTokensLabel.className = 'yt-summary-label';
+            MaxTokensLabel.textContent = 'MaxTokensLabel';
+            advancedSettingsContent.appendChild(MaxTokensLabel);
+
+            const maxTokensInput = document.createElement('input');
+            maxTokensInput.type = 'number';
+            maxTokensInput.className = 'yt-summary-input';
+
+            maxTokensInput.id = 'max_tokens';
+            maxTokensInput.value = this.config.presence_penalty || '4096';
+            maxTokensInput.step = '1';
+            maxTokensInput.min = '4096';
+            maxTokensInput.max = '80000';
+
+            advancedSettingsContent.appendChild(maxTokensInput)
+
+
+            panel.appendChild(advancedSettingsContent);
+
+            // 添加高级设置折叠功能
+            advancedSettingsBtn.addEventListener('click', () => {
+                const isExpanded = advancedSettingsContent.style.display === 'block';
+                advancedSettingsContent.style.display = isExpanded ? 'none' : 'block';
+                advancedArrow.className = `yt-summary-arrow ${isExpanded ? '' : 'expanded'}`;
             });
+
+            // 保存按钮
+            const saveBtn = document.createElement('button');
+            saveBtn.className = 'yt-summary-button';
+            saveBtn.style.marginTop = '20px';
+            saveBtn.textContent = '保存设置';
+            saveBtn.onclick = () => {
+                this.config = {
+                    ...this.config,
+                    apiKey: apiKeyInput.value,
+                    baseUrl: baseUrlInput.value,
+                    model: modelInput.value,
+                    temperature: parseFloat(temperatureInput.value),
+                    top_p: parseFloat(topPInput.value),
+                    presence_penalty: parseFloat(presencePenaltyInput.value),
+                    frequency_penalty: parseFloat(frequencyPenaltyInput.value),
+                    max_tokens: parseInt(maxTokensInput.value),
+
+                    prompt: promptInput.value
+                };
+                ConfigManager.saveConfig(this.config);
+                this.aiProcessor = new AIProcessor(this.config);
+                this.hideSettings();
+            };
+
+            panel.appendChild(saveBtn);
+            this.settingsPanel = panel;
+            document.body.appendChild(panel);
         }
 
         createOverlay() {
@@ -585,7 +785,7 @@
                 const summaryContent = this.renderMarkdown(summary);
                 resultContainer.textContent = '';
                 resultContainer.appendChild(summaryContent);
-                } catch (error) {
+            } catch (error) {
                 resultContainer.textContent = `错误：${error.message}`;
                 infoContainer.textContent = '获取字幕失败';
             }
@@ -648,9 +848,6 @@
                 let text = line;
                 let lastIndex = 0;
                 let match;
-
-                // 临时存储创建的元素
-                const elements = [];
 
                 // 处理加粗
                 const boldRegex = /\*\*(.+?)\*\*/g;
@@ -759,7 +956,7 @@
 
     // 处理YouTube的SPA导航
     const pushStateOriginal = history.pushState;
-    history.pushState = function() {
+    history.pushState = function () {
         pushStateOriginal.apply(this, arguments);
         console.log("检测到页面导航");
         setTimeout(waitForYouTube, 1000);
